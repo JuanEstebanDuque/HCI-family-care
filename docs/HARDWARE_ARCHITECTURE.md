@@ -6,7 +6,7 @@ Este documento explica cómo funciona el cerebro físico del proyecto "Vínculo 
 El proyecto usa una topología de "Cerebro Central + Puente de Red":
 
 *   **Arduino UNO R4 Minima (Cerebro):** Se encarga exclusivamente de leer los sensores a altísima velocidad, manejar las interrupciones, calcular los temporizadores de inactividad y estructurar los datos. Al carecer de antena Wi-Fi, envía la información procesada a través de su puerto USB/Serial (`TX`/`RX`).
-*   **ESP32 (Puente de Red):** Actúa como esclavo. Escucha permanentemente el cable Serial que viene del Arduino. Cuando lee un paquete JSON válido, abre una conexión Wi-Fi y hace un `HTTP POST` hacia nuestro servidor NestJS.
+*   **ESP8266 ESP-01 (Puente de Red):** Actúa como esclavo silencioso usando su adaptador de voltaje. Escucha permanentemente el cable Serial que viene del Arduino. Cuando lee un paquete JSON válido, usa su antena Wi-Fi y hace un `HTTP POST` hacia nuestro servidor NestJS.
 
 ---
 
@@ -24,8 +24,8 @@ El archivo `arduino_device.ino` es un monolito que corre a miles de ciclos por s
 *   **Lógica:** A diferencia del Delay tradicional que paraliza el Arduino, usamos la función no-bloqueante `millis()` para contar milisegundos en segundo plano. Si el ultrasónico detecta `< 50cm` ininterrumpidamente por 1 hora (`3600000UL`), emite un pitido muy suave (Nota "La" a 440Hz) por 2 segundos. Cuando la persona se levanta, envía el evento de "Resumed Activity" para calmar la App de Laura.
 
 ### Módulo de Presencia y Alimentación (Casos 3 y 4)
-*   **Componentes:** Sensor PIR (Sala) + LDR / Fotorresistencia (Nevera).
-*   **Lógica:** El PIR funciona como un gatillo binario de latidos (Heartbeat). Cada vez que hay movimiento envía un ping al servidor. La fotorresistencia en la nevera detecta picos de luz (puerta abierta); cuando se cierra, el Arduino calcula internamente cuántos segundos estuvo abierta y manda esa duración empaquetada.
+*   **Componentes:** Sensor PIR (Sala) + Módulo Láser de Tiempo de Vuelo VL53L0X (Nevera).
+*   **Lógica:** El PIR funciona como un gatillo binario de latidos (Heartbeat). Cada vez que hay movimiento manda un ping al servidor. El láser dispara un rayo I2C contra el marco de la nevera midiendo la distancia en milímetros; cuando la distancia se rompe (> 50cm), el Arduino deduce que la puerta se abrió, calcula cuántos segundos estuvo así y manda esa exactitud para saber tiempo de alimentación.
 
 ### Módulo "El Tótem" (Caso 5)
 *   **Componentes:** Push Button + LED RGB.

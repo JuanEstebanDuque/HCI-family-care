@@ -2,8 +2,8 @@
 
 Este documento describe el ecosistema de red, bases de datos y la comunicación entre los microservicios que le dan vida al Vínculo Pasivo entre Manuel y Laura.
 
-## 1. El Puente (El Rol del ESP32 / Bridge)
-El hardware se comunica con el mundo a través de un intermediario. El ESP32 solo tiene un trabajo:
+## 1. El Puente (El Rol del ESP8266 / Bridge)
+El hardware se comunica con el mundo a través de un intermediario. El módulo Wi-Fi ESP8266 solo tiene un trabajo:
 1. Leer el objeto JSON enviado por el Arduino vía Serial.
 2. Hacer un `HTTP POST` apuntando a la IP pública (o dominio de Vercel/Render) donde vive NestJS bajo el endpoint: `/events/arduino`.
 
