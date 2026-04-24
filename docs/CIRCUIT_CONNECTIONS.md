@@ -26,6 +26,38 @@ Teniendo tus 9 patas disponibles a la vista, conéctalo al Arduino así:
 
 ---
 
+## Módulo 1B: Comunicación Alternativa (Bluetooth HC-05 / HC-06)
+*Si no dispones del módulo Wi-Fi temporalmente, usarás este módulo Bluetooth como plan de respaldo para enviar los datos a tu computadora mediante PuTTY.*
+
+Para cablear el HC-05 al Arduino UNO R4 Minima (usando el puerto `Serial1`):
+1. Pata `VCC` ➔ Línea **ROJA (5V)**.
+2. Pata `GND` ➔ Línea **AZUL (GND)**.
+3. Pata `TXD` ➔ Al **Pin RX (Pin 0)** del Arduino.
+4. Pata `RXD` ➔ Al **Pin TX (Pin 1)** del Arduino.
+*(Nota: Las patas EN y STATE puedes dejarlas al aire. Al igual que con el Wi-Fi, recuerda que RX va con TX, y TX va con RX de forma cruzada).*
+
+### ¿Cómo probar la conexión Inalámbrica con PuTTY?
+
+Dado que este módulo no envía datos directo al Wi-Fi, tu computadora leerá los datos en bruto usando el programa de terminal **PuTTY**:
+
+**Paso 1: Emparejar el Módulo con Windows**
+1. Enciende el Arduino. El LED del Bluetooth empezará a parpadear rápidamente.
+2. Ve a la **Configuración de Bluetooth** de Windows y selecciona "Agregar dispositivo".
+3. Selecciona tu módulo (usualmente se llama `HC-05`, `HC-06` o similar). El código PIN suele ser `1234` o `0000`.
+4. Una vez emparejado, presiona las teclas `Win + R` en tu teclado, escribe `devmgmt.msc` y pulsa Enter para abrir el Administrador de Dispositivos.
+5. Despliega la categoría **Puertos (COM y LPT)**. Verás un par de puertos nuevos llamados "Puerto serie estándar a través de vínculos Bluetooth" (ej. `COM4` y `COM5`). Anota esos puertos COM (el de número menor suele ser el correcto, llamado "Saliente").
+
+**Paso 2: Leer los datos en PuTTY**
+1. Descarga (si no lo tienes) y abre el programa **PuTTY**.
+2. En la pantalla de inicio, en la categoría "Connection type", selecciona la burbuja de **Serial**.
+3. En la casilla "Serial line", escribe el puerto COM de tu Bluetooth (por ejemplo, `COM4`).
+4. En la casilla "Speed", escribe `9600` (que es la velocidad base predeterminada de los HC-05).
+5. Haz clic en el botón **Open** abajo a la derecha.
+
+Si el Arduino está corriendo tu código de prueba que imprimía en `Serial1`, verás que la terminal negra de PuTTY se abre y mágicamente empieza a mostrar los textos de bienvenida que programaste en el Arduino, demostrando que la señal está viajando por el aire exitosamente.
+
+---
+
 ## Módulo 2: Interfaz del Tótem (Bienestar y Estado)
 
 ### Pantalla LCD 1602 (I2C)

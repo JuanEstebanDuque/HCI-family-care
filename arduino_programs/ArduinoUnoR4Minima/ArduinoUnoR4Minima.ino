@@ -90,6 +90,7 @@ void printLCD(String line1, String line2);
 
 void setup() {
   Serial.begin(115200);
+  Serial1.begin(9600); // Inicia comunicación Bluetooth (HC-05) en los pines RX(0) y TX(1)
 
   // Inicializar Pantalla LCD
   lcd.init();
@@ -340,5 +341,6 @@ void sendJsonEvent(String sensorId, String value, String module) {
   jsonPayload += "\"estado\": \"" + value + "\"";
   jsonPayload += "}}";
   
-  Serial.println(jsonPayload);
+  Serial.println(jsonPayload); // Para monitorearlo en el PC por cable USB
+  Serial1.println(jsonPayload); // Para enviarlo inalámbricamente vía Bluetooth
 }
