@@ -2,6 +2,10 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include "Adafruit_VL53L0X.h" // Librería obligatoria para el sensor Láser VL53L0X
+#include "MAX30105.h"
+#include "heartRate.h"
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 //#include <virtuabotixRTC.h> // Descomenta si instalas la librería virtuabotixRTC para tu módulo DS1302
 
 // =========================================================================
@@ -31,9 +35,15 @@ const int BUZZER_PIN       = A2; // Zumbador Pasivo (Alertas)
 const int POT_PIN          = A1; // Potenciómetro para simulador de tiempo
 
 // LCD I2C y Laser VL53L0X
-// La dirección I2C de la pantalla común suele ser 0x27 o 0x3F.
 LiquidCrystal_I2C lcd(0x27, 16, 2); 
-Adafruit_VL53L0X lox = Adafruit_VL53L0X(); // Instancia del Laser
+Adafruit_VL53L0X lox = Adafruit_VL53L0X(); 
+MAX30105 particleSensor;
+Adafruit_MPU6050 mpu;
+
+// Variables del podómetro
+int totalPasos = 0;
+float umbralPaso = 13.0; // Sensibilidad para sacudida (Gravedad = 9.8m/s2, >13 es un choque)
+unsigned long ultimoPasoTime = 0;
 
 // Instancia RTC (Descomentar al usar la librería física virtuabotixRTC)
 // virtuabotixRTC myRTC(RTC_CLK, RTC_DAT, RTC_RST);
@@ -54,6 +64,13 @@ const float DIST_SOFA_THRESHOLD = 50.0; // cm para considerar sentado en el sof�
 // Tiempos globales
 unsigned long currentMillis = 0;
 unsigned long lastResetTime = 0;
+
+// Variables PIR (Basadas en documentación técnica)
+const int calibrationTime = 30; // Segundos
+const unsigned long pause = 5000; // MS de silencio para fin de movimiento
+unsigned long lowIn = 0;
+boolean lockLow = true;
+boolean takeLowTime = false;
 
 // Caso 1 & 6: Medicación y Duplicación
 volatile bool medVibrated = false; 
@@ -80,6 +97,14 @@ bool totemCheckFullfilled = false;
 
 // Caso 7: Multi-evidencia 
 bool routineNotifiedToday = false;
+
+// Variables de ritmo cardíaco
+const byte RATE_SIZE = 4;
+byte rates[RATE_SIZE];
+byte rateSpot = 0;
+long lastBeat = 0;
+int beatsPerMinute = 0;
+int beatAvg = 0;
 
 // Prototipos
 void handleVibInterrupt();
@@ -115,8 +140,14 @@ void setup() {
   updateTrafficLight(LOW, LOW, HIGH);
 
   // Interrupción para capturar la vibración del pastillero rápidamente
-  // Dependiendo del módulo, la señal activa puede ser RISING o FALLING
   attachInterrupt(digitalPinToInterrupt(VIB_MED_PIN), handleVibInterrupt, RISING);
+
+  // Calibración Sensor PIR
+  Serial.println("⏳ Calibrando sensor PIR (30s)...");
+  for(int i = 0; i < calibrationTime; i++){
+    delay(1000);
+  }
+  Serial.println("¡PIR Activo!");
 
   // Inicializar tiempo base
   lastResetTime = millis();
@@ -127,6 +158,24 @@ void setup() {
   } else {
     lox.startRangeContinuous();
   }
+
+  // Iniciar sensor MAX30105 (Ritmo Cardíaco)
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("¡Alerta! No se detecto el Sensor MAX30105 (Huella/Pulso).");
+  } else {
+    particleSensor.setup();
+    particleSensor.setPulseAmplitudeRed(0x3F); // Brillo alto para que se vea
+    particleSensor.setPulseAmplitudeIR(0x3F);
+  }
+
+  // Iniciar sensor MPU6050 (Podómetro Bastón)
+  if (!mpu.begin()) {
+    Serial.println("¡Alerta! MPU6050 no detectado. Revisa SDA/SCL.");
+    printLCD("ERR: MPU6050", "Revise cables");
+  } else {
+    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ); // Filtra ruidos rápidos para pasos suaves
+  }
   
   delay(2000);
   printLCD("Monitoreando", "Actividad Abuelo");
@@ -134,6 +183,39 @@ void setup() {
 
 void loop() {
   unsigned long currentMillis = millis();
+
+  // 1. LECTURA DEL BASTÓN (PODÓMETRO MPU6050)
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+  
+  // Calcular magnitud del vector de aceleración 3D: sqrt(x^2 + y^2 + z^2)
+  float magnitudAceleracion = sqrt(pow(a.acceleration.x, 2) + pow(a.acceleration.y, 2) + pow(a.acceleration.z, 2));
+  
+  // Si la fuerza supera la gravedad + un impacto (umbral) y evitamos rebotes rápidos (timeout)
+  if (magnitudAceleracion > umbralPaso && (currentMillis - ultimoPasoTime > 500)) {
+    totalPasos++;
+    ultimoPasoTime = currentMillis;
+    
+    // Cada 10 pasos envía una actualización silenciosa al backend
+    if (totalPasos % 10 == 0) {
+      sendJsonEvent("mpu6050", String(totalPasos), "baston");
+    }
+  }
+
+  // 1B. LECTURA DE RITMO CARDÍACO
+  long irValue = particleSensor.getIR();
+  if (checkForBeat(irValue) == true) {
+    long delta = millis() - lastBeat;
+    lastBeat = millis();
+    beatsPerMinute = 60 / (delta / 1000.0);
+    if (beatsPerMinute < 255 && beatsPerMinute > 20) {
+      rates[rateSpot++] = (byte)beatsPerMinute;
+      rateSpot %= RATE_SIZE;
+      beatAvg = 0;
+      for (byte x = 0; x < RATE_SIZE; x++) beatAvg += rates[x];
+      beatAvg /= RATE_SIZE;
+    }
+  }
 
   // =========================================================================
   // SISTEMA DE FEEDBACK: LECTURA DEL ESP8266 (INTERNET)
@@ -174,6 +256,7 @@ void loop() {
   // =========================================================================
   
   if (medVibrated) {
+    Serial.println("📳 [DEBUG] Vibración detectada, procesando...");
     delay(200); // Debounce físico del resorte o cristal
     
     if (isTaken) {
@@ -226,18 +309,28 @@ void loop() {
   }
 
   // =========================================================================
-  // CASO 3: PRESENCIA ESTÁTICA (PIR)
+  // CASO 3: PRESENCIA ESTÁTICA (PIR Robusto)
   // =========================================================================
   
   if (digitalRead(PIR_PIN) == HIGH) {
-    if (!pirActive) {
+    if (lockLow) {
+      lockLow = false;
       pirActive = true;
-      lastSeenTime = currentMillis;
       movementCheckFullfilled = true; // Acumular para Caso 7
       sendJsonEvent("pir_sensor", "motion_detected", "activity");
     }
-  } else {
-    pirActive = false;
+    takeLowTime = true;
+  }
+
+  if (digitalRead(PIR_PIN) == LOW) {
+    if (takeLowTime) {
+      lowIn = millis();
+      takeLowTime = false;
+    }
+    if (!lockLow && (millis() - lowIn > pause)) {
+      lockLow = true;
+      pirActive = false;
+    }
   }
 
   // =========================================================================
@@ -246,18 +339,22 @@ void loop() {
   
   if (lox.isRangeComplete()) {
     int distance_mm = lox.readRange();
-    // 500mm = 50cm, si la distancia supera 50cm es porq no está apuntando al marco (Puerta Abierta)
-    if (distance_mm > 500) { 
+    // Umbral reducido a 300mm para mayor sensibilidad
+    if (distance_mm > 300) { 
       if (!isFridgeOpen) {
+        printLCD("Nevera", "PUERTA ABIERTA");
         isFridgeOpen = true;
         fridgeOpenTime = currentMillis;
       }
     } else {
       if (isFridgeOpen) {
         unsigned long duracion = (currentMillis - fridgeOpenTime) / 1000; // Segundos abierta
+        printLCD("Nevera Cerrada", "Duree: " + String(duracion) + "s");
         isFridgeOpen = false;
         fridgeCheckFullfilled = true; // Acumular para Caso 7
         sendJsonEvent("fridge_laser", "closed_duration_" + String(duracion) + "s", "activity");
+        delay(1500);
+        printLCD("Monitoreando", "Actividad Abuelo");
       }
     }
   }
@@ -277,6 +374,8 @@ void loop() {
     
     totemCheckFullfilled = true; // Acumular para Caso 7
     sendJsonEvent("touch_totem", "well_being_confirmed", "ritual");
+    
+    Serial.print("❤️ [RITUAL] Ritmo Cardíaco: "); Serial.print(beatAvg); Serial.println(" BPM");
     
     delay(3000);
     printLCD("Monitoreando", "Actividad Abuelo");

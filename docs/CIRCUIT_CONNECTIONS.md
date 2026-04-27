@@ -157,6 +157,17 @@ En ese orden de Arriba hacia Abajo, las patas son:
 2. **La pata del Medio (`OUT/Señal`)** ➔ **Pin Digital 3** del Arduino (Soporta `attachInterrupt()`).
 3. **La pata de más Abajo (`VCC`)** ➔ **Línea ROJA (5V)**. *(Sé que es la energía porque la pista va derechito hacia el diodo cilíndrico anaranjado de protección).*
 
+### Podómetro de Bastón (MPU6050 Acelerómetro)
+Para simular los "pasos" diarios de Manuel durante la presentación (ya que los cables I2C no alcanzan físicamente hasta un bastón real, haremos un prototipo atado).
+**Objeto físico sugerido:** Módulo suelto en la mesa que puedas sacudir con la mano, o montado en un palito corto simulando el bastón.
+
+**Contexto (por qué así):** La app de Figma requiere la métrica de pasos diarios. Este acelerómetro capta la fuerza de la gravedad y las sacudidas para sumarlas. Va colgado en paralelo a las mismas líneas I2C que el láser y la pantalla.
+1. `VCC` ➔ **Línea ROJA (5V)**.
+2. `GND` ➔ **Línea AZUL (GND)**.
+3. `SDA` ➔ Comparte cableado hacia el **Pin Analógico A4** del Arduino.
+4. `SCL` ➔ Comparte cableado hacia el **Pin Analógico A5** del Arduino.
+*(Nota: Las patas `XDA`, `XCL`, `ADO` e `INT` déjalas sueltas, no se necesitan para contar pasos básicos).*
+
 ---
 
 ## Módulo 5: Medicación (Pastillero - Caso 1 y 6)
