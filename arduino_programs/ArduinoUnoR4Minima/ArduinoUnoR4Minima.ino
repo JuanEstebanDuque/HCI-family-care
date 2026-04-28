@@ -218,24 +218,13 @@ void loop() {
   }
 
   // =========================================================================
-  // SISTEMA DE FEEDBACK: LECTURA DEL ESP8266 (INTERNET)
+  // SISTEMA DE FEEDBACK: LECTURA DEL HC-05 (BLUETOOTH)
   // =========================================================================
-  if (Serial.available() > 0) {
-    String msg = Serial.readStringUntil('\n');
+  if (Serial1.available() > 0) {
+    String msg = Serial1.readStringUntil('\n');
     msg.trim();
-    
-    if (msg == "WIFI_OFF") {
-      printLCD("! SIN INTERNET !", "Revise el Router");
-      digitalWrite(LED_YEL_TRAFFIC, HIGH); // Prende el amarillo de precaución
-      tone(BUZZER_PIN, 250, 1000);         // Sonido de error grave
-    } 
-    else if (msg == "WIFI_ON") {
-      printLCD("Wi-Fi Conectado", "Sistema en linea");
-      digitalWrite(LED_YEL_TRAFFIC, LOW);  // Apaga el amarillo
-      tone(BUZZER_PIN, 1500, 300);         // Sonido agudo feliz
-      delay(2000); // Pausa para que Manuel lo alcance a leer
-      printLCD("Monitoreando", "Actividad Abuelo"); // Retoma interfaz limpia
-    }
+    // Aquí puedes añadir lógica si en el futuro el PC le manda comandos de vuelta al Arduino
+    // Por ahora, el Bluetooth es principalmente de una vía (Arduino -> PC)
   }
 
   // Reset diario de variables (Para nueva rutina diaria)

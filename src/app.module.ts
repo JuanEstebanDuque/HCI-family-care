@@ -6,6 +6,8 @@ import { TestModule } from './test/test.module';
 import { UsersModule } from './users/users.module';
 import { PairingsModule } from './pairings/pairings.module';
 import { EventsModule } from './events/events.module';
+import { MedicationsModule } from './medications/medications.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   imports: [
@@ -13,7 +15,9 @@ import { EventsModule } from './events/events.module';
     TestModule,
     UsersModule,
     PairingsModule,
-    EventsModule
+    EventsModule,
+    MedicationsModule,
+    AnalyticsModule
   ],
   controllers: [AppController],
   providers: [AppService],
