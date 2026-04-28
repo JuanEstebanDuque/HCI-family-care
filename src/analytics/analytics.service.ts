@@ -17,20 +17,28 @@ export class AnalyticsService {
     // Lógica básica simulada para procesar eventos
     events.forEach((event: any) => {
       // Filtrar por eventos de hoy (simulado, asumiendo que todos son de hoy para este ejemplo rápido)
-      if (event.modulo === 'baston' && event.data.sensor_id === 'mpu6050') {
+      if (event.modulo === 'ACTIVIDAD' && event.data.sensor_id === 'mpu6050') {
         pasosHoy = parseInt(event.data.estado) || 0;
       }
-      // asumiendo que llega ritmo cardíaco en algún lado
-      if (event.modulo === 'ritual' && event.data.estado.includes('BPM')) {
-        // Parsear BPM
+      // El nuevo código de Arduino manda "BPM_85"
+      if (event.modulo === 'RITUAL' && event.data?.estado?.includes('BPM_')) {
+        const bpmVal = parseInt(event.data.estado.split('_')[1]);
+        if (!isNaN(bpmVal)) {
+          sumBPM += bpmVal;
+          countBPM++;
+        }
       }
     });
+
+    if (countBPM > 0) {
+      promedioBPM = Math.round(sumBPM / countBPM);
+    }
 
     // Hardcodeado para simular la matemática en base a los eventos
     // En un futuro, aquí se procesarían los arrays exactos filtrando por fecha
     return {
-      pasosHoy: pasosHoy || 1050,
-      promedioBPM: 85,
+      pasosHoy: pasosHoy || 1050, // Usa el real si hay pasos, si no 1050 por defecto
+      promedioBPM: promedioBPM || 85, // Usa el real si hay ritmo, si no 85 por defecto
       tiempoSala: "2h 15m",
       resumenDiarioData: [
         { name: "00:00", value: 10 },
@@ -93,18 +101,24 @@ export class AnalyticsService {
       let titulo = "Evento detectado";
       let subtitulo = event.modulo;
       
-      if (event.modulo === 'baston') {
+      if (event.modulo === 'ACTIVIDAD' && event.data.sensor_id === 'mpu6050') {
         titulo = "Actividad Física";
         subtitulo = `Pasos detectados: ${event.data.estado}`;
-      } else if (event.modulo === 'ritual') {
+      } else if (event.modulo === 'RITUAL') {
         titulo = "Tótem Tocado";
         subtitulo = "Saludo enviado";
-      } else if (event.modulo === 'activity' && event.data.sensor_id === 'fridge_laser') {
-        titulo = "Nevera abierta";
+      } else if (event.modulo === 'ACTIVIDAD' && event.data.sensor_id === 'fridge_laser') {
+        titulo = "Nevera usada";
         subtitulo = `Buscando comida`;
-      } else if (event.modulo === 'medication') {
-        titulo = "Medicina tomada";
-        subtitulo = "Frasco agitado";
+      } else if (event.modulo === 'ACTIVIDAD' && event.data.sensor_id === 'pir_sensor') {
+        titulo = "Movimiento detectado";
+        subtitulo = "Actividad en la casa";
+      } else if (event.modulo === 'ACTIVIDAD' && event.data.sensor_id === 'sofa_ultrasonic') {
+        titulo = event.data.estado === 'sedentary_alert' ? "Alerta Sedentarismo" : "Actividad retomada";
+        subtitulo = event.data.estado === 'sedentary_alert' ? "Mucho tiempo en el sofá" : "Se levantó del sofá";
+      } else if (event.modulo === 'MEDICACION') {
+        titulo = event.data.estado === 'duplication_warning' ? "¡Peligro de Duplicación!" : "Medicina tomada";
+        subtitulo = event.data.estado === 'duplication_warning' ? "Intentó tomar pastillas de nuevo" : "Frasco agitado correctamente";
       }
 
       return {

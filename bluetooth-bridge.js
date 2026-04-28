@@ -5,7 +5,7 @@ const axios = require('axios');
 // ==========================================
 // CONFIGURACIÓN (¡CÁMBIA ESTO SEGÚN TU PC!)
 // ==========================================
-const BLUETOOTH_COM_PORT = 'COM6'; // <-- Reemplaza por tu puerto COM real
+const BLUETOOTH_COM_PORT = 'COM7'; // <-- Reemplaza por tu puerto COM real
 const BAUDRATE = 9600;             // Debe coincidir con Serial1.begin(9600) de tu Arduino
 const BACKEND_URL = 'http://localhost:3000/events/arduino';
 
@@ -48,6 +48,18 @@ parser.on('data', async (data) => {
   try {
     // Intentar convertir a JSON para validar que es un dato válido del proyecto
     const payload = JSON.parse(cleanData);
+
+    // Mapear los módulos del Arduino a los Enums exactos del Backend NestJS
+    const moduloMap = {
+      'activity': 'ACTIVIDAD',
+      'medication': 'MEDICACION',
+      'ritual': 'RITUAL',
+      'baston': 'ACTIVIDAD' // El bastón cuenta como actividad física
+    };
+
+    if (payload.modulo && moduloMap[payload.modulo.toLowerCase()]) {
+      payload.modulo = moduloMap[payload.modulo.toLowerCase()];
+    }
 
     if (payload.token) {
       console.log(`🌍 Reenviando evento del módulo "${payload.modulo}" a la Base de Datos...`);
