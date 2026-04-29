@@ -1,100 +1,236 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { EventsService } from '../events/events.service';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class AnalyticsService {
-  constructor(private readonly eventsService: EventsService) {}
+  constructor(
+    private readonly eventsService: EventsService,
+    private readonly usersService: UsersService,
+  ) {}
 
-  async getDashboard(elderId: string) {
-    const events = await this.eventsService.findAllByElder(elderId);
+  async getDashboard(pin: string) {
+    const elder = await this.usersService.findByPin(pin);
+    if (!elder) throw new NotFoundException(`No se encontró elder con pin: ${pin}`);
+    const events = await this.eventsService.findAllByElder((elder as any)._id.toString());
     
-    let pasosHoy = 0;
-    let promedioBPM = 0;
-    let tiempoSalaSegundos = 0;
-    let sumBPM = 0;
-    let countBPM = 0;
+    const now = new Date();
+    const todayStr = now.toLocaleDateString();
+    const eventsToday = events.filter((e: any) => new Date(e.createdAt).toLocaleDateString() === todayStr);
 
-    // Lógica básica simulada para procesar eventos
-    events.forEach((event: any) => {
-      // Filtrar por eventos de hoy (simulado, asumiendo que todos son de hoy para este ejemplo rápido)
-      if (event.modulo === 'ACTIVIDAD' && event.data.sensor_id === 'mpu6050') {
-        pasosHoy = parseInt(event.data.estado) || 0;
+    // Estados por defecto
+    let estadoGeneral = {
+      titulo: "Todo normal hoy",
+      descripcion: `La rutina se mantiene dentro de lo esperado.`,
+      ultimaActualizacion: "Sin eventos recientes",
+      color: "#8faf74" // verde (hex) o nombre de clase, según el front
+    };
+
+    let resumenMedicacion = {
+      estado: "Pendiente",
+      hora: "--:--"
+    };
+
+    let resumenActividad = {
+      estado: "Sin actividad",
+      hora: "--:--"
+    };
+
+    let lecturaSistema = {
+      titulo: "Lectura del sistema",
+      mensaje: "No se detectan anomalías relevantes"
+    };
+
+    let ultEventoDate: Date | null = null;
+    let tieneAlertaSedentarismo = false;
+    let tieneAlertaMedicacion = false;
+
+    eventsToday.forEach((e: any) => {
+      const eDate = new Date(e.createdAt);
+      if (!ultEventoDate || eDate > ultEventoDate) ultEventoDate = eDate;
+
+      if (e.modulo === 'MEDICACION') {
+        if (e.data?.estado === 'duplication_warning') {
+          tieneAlertaMedicacion = true;
+          resumenMedicacion.estado = "¡Peligro de duplicación!";
+          resumenMedicacion.hora = eDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } else {
+          // Asumimos dosis completada
+          resumenMedicacion.estado = "Dosis completada";
+          resumenMedicacion.hora = eDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
       }
-      // El nuevo código de Arduino manda "BPM_85"
-      if (event.modulo === 'RITUAL' && event.data?.estado?.includes('BPM_')) {
-        const bpmVal = parseInt(event.data.estado.split('_')[1]);
-        if (!isNaN(bpmVal)) {
-          sumBPM += bpmVal;
-          countBPM++;
+
+      if (e.modulo === 'ACTIVIDAD') {
+        if (e.data?.sensor_id === 'sofa_ultrasonic' && e.data?.estado === 'sedentary_alert') {
+          tieneAlertaSedentarismo = true;
+        }
+        if (e.data?.sensor_id === 'mpu6050') {
+          resumenActividad.estado = "Actividad registrada";
+          resumenActividad.hora = eDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
       }
     });
 
-    if (countBPM > 0) {
-      promedioBPM = Math.round(sumBPM / countBPM);
+    if (tieneAlertaMedicacion) {
+      estadoGeneral.titulo = "Alerta de Medicación";
+      estadoGeneral.descripcion = "Se detectó un intento de tomar medicinas de nuevo.";
+      estadoGeneral.color = "#c97b6b"; // rojo/naranja rojizo
+      lecturaSistema.mensaje = "Se detectó riesgo de doble medicación";
+    } else if (tieneAlertaSedentarismo) {
+      estadoGeneral.titulo = "Alerta de Sedentarismo";
+      estadoGeneral.descripcion = "Manuel lleva demasiado tiempo inactivo en la sala.";
+      estadoGeneral.color = "#f59e0b"; // naranja
+      lecturaSistema.mensaje = "Alerta de sedentarismo detectada";
     }
 
-    // Hardcodeado para simular la matemática en base a los eventos
-    // En un futuro, aquí se procesarían los arrays exactos filtrando por fecha
+    if (ultEventoDate) {
+      const dateVal = ultEventoDate as Date;
+      const diffMins = Math.floor((now.getTime() - dateVal.getTime()) / 60000);
+      estadoGeneral.ultimaActualizacion = diffMins === 0 ? "hace un momento" : `hace ${diffMins} min`;
+    }
+
     return {
-      pasosHoy: pasosHoy || 1050, // Usa el real si hay pasos, si no 1050 por defecto
-      promedioBPM: promedioBPM || 85, // Usa el real si hay ritmo, si no 85 por defecto
-      tiempoSala: "2h 15m",
-      resumenDiarioData: [
-        { name: "00:00", value: 10 },
-        { name: "04:00", value: 5 },
-        { name: "08:00", value: 40 },
-        { name: "12:00", value: 30 },
-        { name: "16:00", value: 70 },
-        { name: "20:00", value: 20 },
-      ]
+      estadoGeneral,
+      resumenHoy: {
+        medicacion: resumenMedicacion,
+        actividad: resumenActividad
+      },
+      lecturaSistema
     };
   }
 
-  async getPatterns(elderId: string) {
-    // Array preformateado para recharts en el Frontend
+  async getPatterns(pin: string) {
+    const elder = await this.usersService.findByPin(pin);
+    if (!elder) throw new NotFoundException(`No se encontró elder con pin: ${pin}`);
+    const events = await this.eventsService.findAllByElder((elder as any)._id.toString());
+    
+    const now = new Date();
+    const todayStr = now.toLocaleDateString();
+    
+    // Estructuras para diario (0-23 horas)
+    const pasosPorHora = new Array(24).fill(0);
+    const bpmPorHoraSum = new Array(24).fill(0);
+    const bpmPorHoraCount = new Array(24).fill(0);
+    const salaPorHora = new Array(24).fill(0);
+    
+    // Procesar Diario
+    const eventsToday = events.filter((e: any) => new Date(e.createdAt).toLocaleDateString() === todayStr);
+    
+    eventsToday.forEach((e: any) => {
+      const date = new Date(e.createdAt);
+      const hour = date.getHours();
+      
+      if (e.modulo === 'ACTIVIDAD' && e.data?.sensor_id === 'mpu6050') {
+        pasosPorHora[hour] += parseInt(e.data.estado) || 0;
+      }
+      if (e.modulo === 'RITUAL' && e.data?.estado?.includes('BPM_')) {
+        const val = parseInt(e.data.estado.split('_')[1]);
+        if (!isNaN(val)) {
+          bpmPorHoraSum[hour] += val;
+          bpmPorHoraCount[hour]++;
+        }
+      }
+      if (e.modulo === 'ACTIVIDAD' && e.data?.sensor_id === 'sofa_ultrasonic') {
+        salaPorHora[hour] += 15; // asumiendo 15 mins por evento
+      }
+    });
+
+    // Función para agrupar horas contiguas sin actividad (valor 0)
+    const agruparHoras = (arr: number[]) => {
+      const result: { hora: string; valor: number }[] = [];
+      let zeroStart = -1;
+      
+      for (let i = 0; i <= 24; i++) {
+        if (i < 24 && arr[i] === 0) {
+          if (zeroStart === -1) zeroStart = i;
+        } else {
+          if (zeroStart !== -1) {
+            if (i - 1 === zeroStart) {
+              result.push({ hora: `${zeroStart.toString().padStart(2, '0')}:00`, valor: 0 });
+            } else {
+              result.push({ hora: `${zeroStart.toString().padStart(2, '0')}:00 - ${(i-1).toString().padStart(2, '0')}:59`, valor: 0 });
+            }
+            zeroStart = -1;
+          }
+          if (i < 24) {
+            result.push({ hora: `${i.toString().padStart(2, '0')}:00`, valor: arr[i] });
+          }
+        }
+      }
+      
+      // Si el resultado es un solo bloque de 24h en 0, retornamos vacío para que el Frontend muestre sus datos de demostración
+      if (result.length === 1 && result[0].hora === "00:00 - 23:59" && result[0].valor === 0) {
+        return [];
+      }
+      
+      return result;
+    };
+
+    const agruparPromedioHoras = (sumArr: number[], countArr: number[]) => {
+      const arr = sumArr.map((sum, i) => countArr[i] > 0 ? Math.round(sum / countArr[i]) : 0);
+      return agruparHoras(arr);
+    };
+
+    // Procesar Semanal
+    const diasSemana = ['Do', 'Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa'];
+    const pasosSemanal = new Array(7).fill(0);
+    const bpmSemanalSum = new Array(7).fill(0);
+    const bpmSemanalCount = new Array(7).fill(0);
+    const salaSemanal = new Array(7).fill(0);
+
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(now.getDate() - 7);
+
+    events.forEach((e: any) => {
+      const date = new Date(e.createdAt);
+      if (date >= sevenDaysAgo) {
+        const dayIdx = date.getDay(); // 0-6
+        if (e.modulo === 'ACTIVIDAD' && e.data?.sensor_id === 'mpu6050') {
+          pasosSemanal[dayIdx] += parseInt(e.data.estado) || 0;
+        }
+        if (e.modulo === 'RITUAL' && e.data?.estado?.includes('BPM_')) {
+          const val = parseInt(e.data.estado.split('_')[1]);
+          if (!isNaN(val)) {
+            bpmSemanalSum[dayIdx] += val;
+            bpmSemanalCount[dayIdx]++;
+          }
+        }
+        if (e.modulo === 'ACTIVIDAD' && e.data?.sensor_id === 'sofa_ultrasonic') {
+          salaSemanal[dayIdx] += 15;
+        }
+      }
+    });
+
+    const formatSemanal = (arr: number[]) => {
+      return diasSemana.map((dia, i) => ({ dia, valor: arr[i] }));
+    };
+
+    const formatSemanalPromedio = (sumArr: number[], countArr: number[]) => {
+      return diasSemana.map((dia, i) => ({ 
+        dia, 
+        valor: countArr[i] > 0 ? Math.round(sumArr[i] / countArr[i]) : 0 
+      }));
+    };
+
     return {
-      pasos: [
-        { dia: 'Lu', valor: 1200 },
-        { dia: 'Ma', valor: 900 },
-        { dia: 'Mi', valor: 1500 },
-        { dia: 'Ju', valor: 800 },
-        { dia: 'Vi', valor: 2100 },
-        { dia: 'Sa', valor: 500 },
-        { dia: 'Do', valor: 300 },
-      ],
-      ritmoCardiaco: [
-        { dia: 'Lu', valor: 85 },
-        { dia: 'Ma', valor: 90 },
-        { dia: 'Mi', valor: 82 },
-        { dia: 'Ju', valor: 95 },
-        { dia: 'Vi', valor: 80 },
-        { dia: 'Sa', valor: 88 },
-        { dia: 'Do', valor: 84 },
-      ],
-      movimiento: [
-        { dia: 'Lu', valor: 45 },
-        { dia: 'Ma', valor: 30 },
-        { dia: 'Mi', valor: 60 },
-        { dia: 'Ju', valor: 20 },
-        { dia: 'Vi', valor: 80 },
-        { dia: 'Sa', valor: 15 },
-        { dia: 'Do', valor: 10 },
-      ],
-      tiempoSala: [
-        { dia: 'Lu', valor: 120 },
-        { dia: 'Ma', valor: 180 },
-        { dia: 'Mi', valor: 90 },
-        { dia: 'Ju', valor: 240 },
-        { dia: 'Vi', valor: 60 },
-        { dia: 'Sa', valor: 300 },
-        { dia: 'Do', valor: 360 },
-      ]
+      diario: {
+        pasos: agruparHoras(pasosPorHora),
+        ritmoCardiaco: agruparPromedioHoras(bpmPorHoraSum, bpmPorHoraCount),
+        tiempoSala: agruparHoras(salaPorHora),
+      },
+      semanal: {
+        pasos: formatSemanal(pasosSemanal),
+        ritmoCardiaco: formatSemanalPromedio(bpmSemanalSum, bpmSemanalCount),
+        tiempoSala: formatSemanal(salaSemanal),
+      }
     };
   }
 
-  async getTimeline(elderId: string) {
-    const events = await this.eventsService.findAllByElder(elderId);
+  async getTimeline(pin: string) {
+    const elder = await this.usersService.findByPin(pin);
+    if (!elder) throw new NotFoundException(`No se encontró elder con pin: ${pin}`);
+    const events = await this.eventsService.findAllByElder((elder as any)._id.toString());
     
     // Mapear eventos a un formato visual
     const timeline = events.map((event: any) => {

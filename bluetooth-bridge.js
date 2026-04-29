@@ -1,13 +1,15 @@
 const { SerialPort } = require('serialport');
 const { ReadlineParser } = require('@serialport/parser-readline');
 const axios = require('axios');
+const http = require('http');
 
 // ==========================================
 // CONFIGURACIÓN (¡CÁMBIA ESTO SEGÚN TU PC!)
 // ==========================================
-const BLUETOOTH_COM_PORT = 'COM7'; // <-- Reemplaza por tu puerto COM real
+const BLUETOOTH_COM_PORT = 'COM6'; // <-- Reemplaza por tu puerto COM real
 const BAUDRATE = 9600;             // Debe coincidir con Serial1.begin(9600) de tu Arduino
 const BACKEND_URL = 'http://localhost:3000/events/arduino';
+const BRIDGE_PORT = 3001;          // Puerto para recibir comandos del NestJS
 
 console.log(`\n========================================`);
 console.log(`🤖 INICIANDO PUENTE BLUETOOTH -> NESTJS`);
@@ -21,6 +23,52 @@ const port = new SerialPort({
 });
 
 const parser = port.pipe(new ReadlineParser({ delimiter: '\n' }));
+
+// ==========================================
+// SERVIDOR HTTP PARA RECIBIR COMANDOS DE NESTJS
+// ==========================================
+const server = http.createServer((req, res) => {
+  // Solo permitimos POST /notify
+  if (req.method === 'POST' && req.url === '/notify') {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
+    });
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body);
+        const type = payload.type; // 'MEDICACION' o 'ACTIVIDAD'
+        
+        console.log(`\n[BRIDGE] 📥 Recibida petición del backend: Notificar ${type}`);
+        
+        if (port.isOpen) {
+          if (type === 'MEDICACION') {
+            port.write('NOTIFY_MED\n');
+            console.log(`[BRIDGE] 📡 Comando NOTIFY_MED enviado al Bluetooth`);
+          } else if (type === 'ACTIVIDAD') {
+            port.write('NOTIFY_ACT\n');
+            console.log(`[BRIDGE] 📡 Comando NOTIFY_ACT enviado al Bluetooth`);
+          }
+        } else {
+          console.log(`[BRIDGE] ❌ El puerto COM está cerrado, no se pudo enviar.`);
+        }
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'JSON Invalido' }));
+      }
+    });
+  } else {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not Found');
+  }
+});
+
+server.listen(BRIDGE_PORT, () => {
+  console.log(`🌐 Servidor local del Bridge escuchando en http://localhost:${BRIDGE_PORT}`);
+});
 
 // Abrir puerto manualmente para capturar errores
 port.open(function (err) {

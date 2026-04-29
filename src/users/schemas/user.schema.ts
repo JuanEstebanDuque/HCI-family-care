@@ -15,7 +15,13 @@ export class User {
   email?: string;
 
   @Prop()
+  password?: string;
+
+  @Prop()
   pin_vinculacion?: string;
+
+  @Prop()
+  nombre_persona_a_cuidar?: string;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
