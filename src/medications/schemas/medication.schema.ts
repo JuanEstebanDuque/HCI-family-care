@@ -15,7 +15,10 @@ export class Medication {
   dose: string; // Ej: 1 capsula/ 300mg
 
   @Prop({ required: true })
-  schedule: string; // Ej: Con comida 11:00
+  schedule: string; // Ej: Con comida / Descripción libre
+
+  @Prop({ required: true, match: /^\d{2}:\d{2}$/ })
+  hora: string; // Hora de toma en formato HH:mm — Ej: "11:00"
 }
 
 export const MedicationSchema = SchemaFactory.createForClass(Medication);

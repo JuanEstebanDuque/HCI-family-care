@@ -117,6 +117,10 @@ bool ledYellowState = false;
 unsigned long lastSoundTime = 0;
 int soundCount = 0;
 
+// Buffer no-bloqueante para leer comandos del HC-05
+String btBuffer = "";
+bool btCommandReady = false;
+
 // Prototipos
 void handleVibInterrupt();
 float getDistance(int trigPin, int echoPin);
@@ -229,11 +233,28 @@ void loop() {
   }
 
   // =========================================================================
-  // SISTEMA DE FEEDBACK: LECTURA DEL HC-05 (BLUETOOTH)
+  // SISTEMA DE FEEDBACK: LECTURA DEL HC-05 (BLUETOOTH) — NO BLOQUEANTE
   // =========================================================================
-  if (Serial1.available() > 0) {
-    String msg = Serial1.readStringUntil('\n');
-    msg.trim();
+  while (Serial1.available() > 0) {
+    char c = (char)Serial1.read();
+    if (c == '\n' || c == '\r') {
+      if (btBuffer.length() > 0) {
+        btBuffer.trim();
+        btCommandReady = true;
+      }
+    } else {
+      btBuffer += c;
+    }
+  }
+
+  if (btCommandReady) {
+    String msg = btBuffer;
+    btBuffer = "";
+    btCommandReady = false;
+
+    Serial.print("[BT CMD RECIBIDO]: ");
+    Serial.println(msg); // Visible en Monitor Serie USB para depuración
+
     if (msg == "NOTIFY_MED" || msg == "NOTIFY_ACT") {
       isNotifying = true;
       blinkCount = 0;
@@ -241,9 +262,9 @@ void loop() {
       ledYellowState = true;
       lastBlinkTime = currentMillis;
       lastSoundTime = currentMillis;
-      
+
       updateTrafficLight(LOW, HIGH, LOW); // Enciende amarillo inicialmente
-      
+
       if (msg == "NOTIFY_MED") {
         notifyType = "MED";
         printLCD("Recordatorio:", "Toma medicina!");

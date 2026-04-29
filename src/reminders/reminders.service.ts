@@ -1,7 +1,8 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Reminder, ReminderDocument } from './schemas/reminder.schema';
+import { Medication, MedicationDocument } from '../medications/schemas/medication.schema';
 
 @Injectable()
 export class RemindersService implements OnModuleInit {
@@ -10,6 +11,7 @@ export class RemindersService implements OnModuleInit {
 
   constructor(
     @InjectModel(Reminder.name) private reminderModel: Model<ReminderDocument>,
+    @InjectModel(Medication.name) private medicationModel: Model<MedicationDocument>,
   ) {}
 
   onModuleInit() {
@@ -32,38 +34,49 @@ export class RemindersService implements OnModuleInit {
     }
 
     try {
-      // Buscar todos los recordatorios. 
-      // En un sistema real, filtraríamos por elder_id, pero aquí simularemos que todos aplican
+      // Buscar todos los recordatorios y medicaciones
       const reminders = await this.reminderModel.find().exec();
+      const medications = await this.medicationModel.find().exec();
       
+      const notificationsToSend: { tipo: string, mensaje: string }[] = [];
+
       for (const r of reminders) {
-        // Asumiendo que r.hora viene en formato "HH:mm" o "HH:mm:ss"
-        if (r.hora.startsWith(timeStr)) {
-          this.logger.log(`¡Es hora del recordatorio! -> ${r.actividad} a las ${r.hora}`);
-          this.lastTriggeredMinute = timeStr;
-          
-          // Determinar el tipo para enviarlo al Bridge
-          // Si la palabra clave es "pastilla", "medicamento", "dosis", "medicina", lo tratamos como MEDICACION
-          const act = r.actividad.toLowerCase();
+        if (r.hora && r.hora.startsWith(timeStr)) {
           let tipo = 'ACTIVIDAD';
+          const act = r.actividad.toLowerCase();
           if (act.includes('medic') || act.includes('pastill') || act.includes('dosis')) {
             tipo = 'MEDICACION';
           }
-
-          // Enviar al puente Bluetooth
-          fetch('http://localhost:3001/notify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: tipo })
-          }).then(res => {
-            if (res.ok) this.logger.log(`Notificación enviada exitosamente al Bluetooth (${tipo})`);
-          }).catch(err => {
-            this.logger.error(`Error enviando notificación al Bluetooth: ${err.message}`);
-          });
-
-          // Solo detonamos uno por minuto para no saturar el Arduino
-          break;
+          notificationsToSend.push({ tipo, mensaje: r.actividad });
         }
+      }
+
+      for (const m of medications) {
+        if (m.hora && m.hora.startsWith(timeStr)) {
+          // Medicaciones van directamente como MEDICACION
+          notificationsToSend.push({ tipo: 'MEDICACION', mensaje: m.name });
+        }
+      }
+
+      if (notificationsToSend.length > 0) {
+        this.logger.log(`¡Hay ${notificationsToSend.length} notificaciones para las ${timeStr}!`);
+        this.lastTriggeredMinute = timeStr;
+
+        // Enviar al puente Bluetooth con retraso (staggering) si hay varias
+        notificationsToSend.forEach((notif, index) => {
+          setTimeout(() => {
+            this.logger.log(`-> Enviando notificación: ${notif.mensaje} (${notif.tipo})`);
+            fetch('http://localhost:3001/notify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ type: notif.tipo })
+            }).then(res => {
+              if (res.ok) this.logger.log(`Notificación confirmada por el Bluetooth (${notif.tipo})`);
+            }).catch(err => {
+              this.logger.error(`Error enviando notificación al Bluetooth: ${err.message}`);
+            });
+          }, index * 15000); // 15 segundos de diferencia entre notificaciones concurrentes
+        });
       }
     } catch (error) {
       this.logger.error(`Error consultando recordatorios: ${error.message}`);
@@ -77,5 +90,23 @@ export class RemindersService implements OnModuleInit {
 
   async findByElder(elder_id: string) {
     return this.reminderModel.find({ elder_id }).sort({ createdAt: -1 }).exec();
+  }
+
+  async update(id: string, updateDto: Partial<Reminder>) {
+    const updated = await this.reminderModel
+      .findByIdAndUpdate(id, updateDto, { new: true })
+      .exec();
+    if (!updated) {
+      throw new NotFoundException(`Reminder with id ${id} not found`);
+    }
+    return updated;
+  }
+
+  async remove(id: string) {
+    const deleted = await this.reminderModel.findByIdAndDelete(id).exec();
+    if (!deleted) {
+      throw new NotFoundException(`Reminder with id ${id} not found`);
+    }
+    return deleted;
   }
 }

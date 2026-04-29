@@ -45,6 +45,8 @@ export class AnalyticsService {
     let tieneAlertaSedentarismo = false;
     let tieneAlertaMedicacion = false;
 
+    let maxPasosHoy = 0;
+    
     eventsToday.forEach((e: any) => {
       const eDate = new Date(e.createdAt);
       if (!ultEventoDate || eDate > ultEventoDate) ultEventoDate = eDate;
@@ -54,8 +56,7 @@ export class AnalyticsService {
           tieneAlertaMedicacion = true;
           resumenMedicacion.estado = "¡Peligro de duplicación!";
           resumenMedicacion.hora = eDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        } else {
-          // Asumimos dosis completada
+        } else if (e.data?.estado === 'confirmed_taken') {
           resumenMedicacion.estado = "Dosis completada";
           resumenMedicacion.hora = eDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
@@ -66,11 +67,16 @@ export class AnalyticsService {
           tieneAlertaSedentarismo = true;
         }
         if (e.data?.sensor_id === 'mpu6050') {
-          resumenActividad.estado = "Actividad registrada";
+          const pasos = parseInt(e.data.estado) || 0;
+          if (pasos > maxPasosHoy) maxPasosHoy = pasos;
           resumenActividad.hora = eDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
       }
     });
+
+    if (maxPasosHoy > 0) {
+      resumenActividad.estado = `${maxPasosHoy} pasos hoy`;
+    }
 
     if (tieneAlertaMedicacion) {
       estadoGeneral.titulo = "Alerta de Medicación";
@@ -114,15 +120,25 @@ export class AnalyticsService {
     const bpmPorHoraCount = new Array(24).fill(0);
     const salaPorHora = new Array(24).fill(0);
     
-    // Procesar Diario
-    const eventsToday = events.filter((e: any) => new Date(e.createdAt).toLocaleDateString() === todayStr);
+    // Ordenar los eventos de hoy de más antiguo a más reciente para calcular deltas
+    const eventsToday = events
+      .filter((e: any) => new Date(e.createdAt).toLocaleDateString() === todayStr)
+      .sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     
+    let lastTotalPasos = 0;
+
     eventsToday.forEach((e: any) => {
       const date = new Date(e.createdAt);
       const hour = date.getHours();
       
       if (e.modulo === 'ACTIVIDAD' && e.data?.sensor_id === 'mpu6050') {
-        pasosPorHora[hour] += parseInt(e.data.estado) || 0;
+        const pasosAcumulados = parseInt(e.data.estado) || 0;
+        let delta = pasosAcumulados - lastTotalPasos;
+        if (delta < 0) {
+          delta = pasosAcumulados; // El Arduino se reseteó
+        }
+        pasosPorHora[hour] += delta;
+        lastTotalPasos = pasosAcumulados;
       }
       if (e.modulo === 'RITUAL' && e.data?.estado?.includes('BPM_')) {
         const val = parseInt(e.data.estado.split('_')[1]);
@@ -132,7 +148,11 @@ export class AnalyticsService {
         }
       }
       if (e.modulo === 'ACTIVIDAD' && e.data?.sensor_id === 'sofa_ultrasonic') {
-        salaPorHora[hour] += 15; // asumiendo 15 mins por evento
+        if (e.data?.estado === 'sedentary_alert') {
+          salaPorHora[hour] += 60; // Alerta de 1 hora
+        } else {
+          salaPorHora[hour] += 15; // Otras detecciones (promedio)
+        }
       }
     });
 

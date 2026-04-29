@@ -12,5 +12,6 @@ import { UsersModule } from '../users/users.module';
   ],
   controllers: [MedicationsController],
   providers: [MedicationsService],
+  exports: [MongooseModule],
 })
 export class MedicationsModule {}

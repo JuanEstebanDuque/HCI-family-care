@@ -6,7 +6,7 @@ const http = require('http');
 // ==========================================
 // CONFIGURACIÓN (¡CÁMBIA ESTO SEGÚN TU PC!)
 // ==========================================
-const BLUETOOTH_COM_PORT = 'COM6'; // <-- Reemplaza por tu puerto COM real
+const BLUETOOTH_COM_PORT = 'COM7'; // <-- Reemplaza por tu puerto COM real
 const BAUDRATE = 9600;             // Debe coincidir con Serial1.begin(9600) de tu Arduino
 const BACKEND_URL = 'http://localhost:3000/events/arduino';
 const BRIDGE_PORT = 3001;          // Puerto para recibir comandos del NestJS
@@ -38,21 +38,34 @@ const server = http.createServer((req, res) => {
       try {
         const payload = JSON.parse(body);
         const type = payload.type; // 'MEDICACION' o 'ACTIVIDAD'
-        
+
         console.log(`\n[BRIDGE] 📥 Recibida petición del backend: Notificar ${type}`);
-        
+
         if (port.isOpen) {
-          if (type === 'MEDICACION') {
-            port.write('NOTIFY_MED\n');
-            console.log(`[BRIDGE] 📡 Comando NOTIFY_MED enviado al Bluetooth`);
-          } else if (type === 'ACTIVIDAD') {
-            port.write('NOTIFY_ACT\n');
-            console.log(`[BRIDGE] 📡 Comando NOTIFY_ACT enviado al Bluetooth`);
+          let cmd = null;
+          if (type === 'MEDICACION') cmd = 'NOTIFY_MED\n';
+          else if (type === 'ACTIVIDAD') cmd = 'NOTIFY_ACT\n';
+
+          if (cmd) {
+            port.write(cmd, (writeErr) => {
+              if (writeErr) {
+                console.error(`[BRIDGE] ❌ Error al escribir en puerto: ${writeErr.message}`);
+                return;
+              }
+              // drain() espera a que el SO vacíe el buffer hacia el HC-05
+              port.drain((drainErr) => {
+                if (drainErr) {
+                  console.error(`[BRIDGE] ❌ Error en drain: ${drainErr.message}`);
+                } else {
+                  console.log(`[BRIDGE] ✅ Comando "${cmd.trim()}" enviado y confirmado al HC-05`);
+                }
+              });
+            });
           }
         } else {
-          console.log(`[BRIDGE] ❌ El puerto COM está cerrado, no se pudo enviar.`);
+          console.log(`[BRIDGE] ❌ El puerto COM está cerrado, no se pudo enviar. Reinicia el bridge.`);
         }
-        
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
       } catch (e) {
