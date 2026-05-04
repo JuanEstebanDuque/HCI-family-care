@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Event, EventDocument } from './schemas/event.schema';
 import { UsersService } from '../users/users.service';
+import { canonicalEventModulo } from '../common/event-modulo.util';
 
 export class EventUpdateDto {
   token: string;
@@ -25,10 +26,10 @@ export class EventsService {
       throw new NotFoundException(`No se encontró un usuario ELDER con el token: ${update.token}`);
     }
 
-    // 2. Insertar el evento histórico
+    // 2. Insertar el evento histórico (Arduino envía "medication"/"activity"/"ritual")
     const createdEvent = new this.eventModel({
       elder_id: elder._id,
-      modulo: update.modulo,
+      modulo: canonicalEventModulo(update.modulo),
       data: update.data,
     });
 

@@ -42,8 +42,16 @@ Adafruit_MPU6050 mpu;
 
 // Variables del podómetro
 int totalPasos = 0;
-float umbralPaso = 13.0; // Sensibilidad para sacudida (Gravedad = 9.8m/s2, >13 es un choque)
+float umbralPaso = 11.0; // Más sensible para registrar caminata ligera
 unsigned long ultimoPasoTime = 0;
+unsigned long pasosUltimoCambioMs = 0;
+int pasosUltimoEnviado = 0;
+
+// Vibración: solo polling con flanco de subida y tiempo mínimo entre golpes (menos falsos positivos)
+unsigned long lastVibEdgeMs = 0;
+uint8_t lastVibPinLevel = 0;
+unsigned long lastVibHandledMs = 0;
+unsigned long lastBpmTelemetryMs = 0;
 
 // Instancia RTC (Descomentar al usar la librería física virtuabotixRTC)
 // virtuabotixRTC myRTC(RTC_CLK, RTC_DAT, RTC_RST);
@@ -64,6 +72,8 @@ const float DIST_SOFA_THRESHOLD = 50.0; // cm para considerar sentado en el sof�
 // Tiempos globales
 unsigned long currentMillis = 0;
 unsigned long lastResetTime = 0;
+
+int dailyScore = 100; // Puntaje diario de comportamiento
 
 // Variables PIR (Basadas en documentación técnica)
 const int calibrationTime = 30; // Segundos
@@ -121,12 +131,27 @@ int soundCount = 0;
 String btBuffer = "";
 bool btCommandReady = false;
 
+// Variables para Fases de Medicación
+int medPhase = 0; 
+unsigned long phaseStartTime = 0;
+bool phaseWaiting = false;
+bool phaseEventSent = false;
+bool vibrationDuringNotify = false;
+
+
 // Prototipos
-void handleVibInterrupt();
 float getDistance(int trigPin, int echoPin);
-void sendJsonEvent(String sensorId, String value, String module);
+void sendJsonEvent(String sensorId, String value, String module, String dataExtras = "");
 void updateTrafficLight(bool r, bool y, bool g);
 void printLCD(String line1, String line2);
+void updateGlobalTrafficLight();
+void pollVibrationSensitive();
+
+void updateGlobalTrafficLight() {
+  if (dailyScore >= 80) updateTrafficLight(LOW, LOW, HIGH);
+  else if (dailyScore >= 50) updateTrafficLight(LOW, HIGH, LOW);
+  else updateTrafficLight(HIGH, LOW, LOW);
+}
 
 void setup() {
   Serial.begin(115200);
@@ -151,11 +176,10 @@ void setup() {
   pinMode(LED_GRN_TRAFFIC, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
 
-  // Semáforo inicia en verde
-  updateTrafficLight(LOW, LOW, HIGH);
+  // Semáforo inicia en su estado global
+  updateGlobalTrafficLight();
 
-  // Interrupción para capturar la vibración del pastillero rápidamente
-  attachInterrupt(digitalPinToInterrupt(VIB_MED_PIN), handleVibInterrupt, RISING);
+  lastVibPinLevel = digitalRead(VIB_MED_PIN) ? 1 : 0;
 
   // Calibración Sensor PIR
   Serial.println("⏳ Calibrando sensor PIR (30s)...");
@@ -199,6 +223,8 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
+  pollVibrationSensitive();
+
   // 1. LECTURA DEL BASTÓN (PODÓMETRO MPU6050)
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
@@ -210,11 +236,18 @@ void loop() {
   if (magnitudAceleracion > umbralPaso && (currentMillis - ultimoPasoTime > 500)) {
     totalPasos++;
     ultimoPasoTime = currentMillis;
-    
-    // Cada 10 pasos envía una actualización silenciosa al backend
-    if (totalPasos % 10 == 0) {
-      sendJsonEvent("mpu6050", String(totalPasos), "baston");
+    pasosUltimoCambioMs = currentMillis;
+    // Cada 2 pasos: envío regular al backend (consistente con la lógica del servidor)
+    if (totalPasos % 2 == 0) {
+      sendJsonEvent("mpu6050", String(totalPasos), "activity", "\"origen\":\"baston\",\"metrica\":\"pasos_acumulados\"");
+      pasosUltimoEnviado = totalPasos;
     }
+  }
+  // Si el total quedó impar y deja de caminar ~4 s, sube el acumulado actual (evita perder el último paso suelto)
+  if (totalPasos > pasosUltimoEnviado && (totalPasos % 2 == 1) &&
+      (currentMillis - pasosUltimoCambioMs >= 4000)) {
+    sendJsonEvent("mpu6050", String(totalPasos), "activity", "\"origen\":\"baston\",\"metrica\":\"pasos_acumulados\"");
+    pasosUltimoEnviado = totalPasos;
   }
 
   // 1B. LECTURA DE RITMO CARDÍACO
@@ -251,25 +284,32 @@ void loop() {
     String msg = btBuffer;
     btBuffer = "";
     btCommandReady = false;
+    msg.trim(); // Doble seguridad para limpiar el comando
 
     Serial.print("[BT CMD RECIBIDO]: ");
     Serial.println(msg); // Visible en Monitor Serie USB para depuración
 
-    if (msg == "NOTIFY_MED" || msg == "NOTIFY_ACT") {
+    if (msg.indexOf("NOTIFY_MED") >= 0 || msg.indexOf("NOTIFY_ACT") >= 0) {
       isNotifying = true;
       blinkCount = 0;
       soundCount = 0;
       ledYellowState = true;
       lastBlinkTime = currentMillis;
       lastSoundTime = currentMillis;
+      vibrationDuringNotify = false; // Resetear la validación de la vibración
 
-      updateTrafficLight(LOW, HIGH, LOW); // Enciende amarillo inicialmente
-
-      if (msg == "NOTIFY_MED") {
+      if (msg.indexOf("NOTIFY_MED") >= 0) {
         notifyType = "MED";
-        printLCD("Recordatorio:", "Toma medicina!");
+        medPhase = 1;
+        phaseStartTime = currentMillis;
+        phaseWaiting = false;
+        phaseEventSent = false;
+        updateTrafficLight(LOW, LOW, HIGH); // Verde inicialmente para Fase 1
+        printLCD("1. Agita frasco", "2. Toca TOTEM");
+        sendJsonEvent("medication_system", "in_range", "medication");
       } else {
         notifyType = "ACT";
+        updateTrafficLight(LOW, HIGH, LOW); // Amarillo inicialmente
         printLCD("Recordatorio:", "Camina un poco!");
       }
     }
@@ -279,57 +319,141 @@ void loop() {
   // PROCESAMIENTO DE NOTIFICACIONES ACTIVAS (Blink & Sonido)
   // =========================================================================
   if (isNotifying) {
-    // 1. Manejo del LED Amarillo parpadeante (500ms)
-    if (currentMillis - lastBlinkTime >= 500) {
-      ledYellowState = !ledYellowState;
-      digitalWrite(LED_YEL_TRAFFIC, ledYellowState);
-      lastBlinkTime = currentMillis;
-      blinkCount++;
-      
-      // Límite de tiempo: si parpadeó 20 veces (10 segundos) y no hubo respuesta, se apaga solo
-      if (blinkCount >= 20) {
-        isNotifying = false;
-        updateTrafficLight(LOW, LOW, HIGH); // Vuelve a verde
-        printLCD("Monitoreando", "Actividad Abuelo");
-      }
-    }
-    
-    // 2. Manejo del Sonido dependiendo del tipo
     if (notifyType == "MED") {
-      // 3 pitidos cortos al inicio
-      if (soundCount < 3 && (currentMillis - lastSoundTime >= 300)) {
-        tone(BUZZER_PIN, 1200, 100);
-        lastSoundTime = currentMillis;
-        soundCount++;
+      // Manejo de Fases de Medicación
+      if (!phaseWaiting) {
+        // Ejecutando fase actual (15 segundos)
+        if (currentMillis - phaseStartTime < 15000) {
+          // Parpadeo de semáforo según fase
+          if (currentMillis - lastBlinkTime >= 500) {
+            ledYellowState = !ledYellowState;
+            if (medPhase == 1) updateTrafficLight(LOW, LOW, ledYellowState);
+            else if (medPhase == 2) updateTrafficLight(LOW, ledYellowState, LOW);
+            else if (medPhase == 3) updateTrafficLight(ledYellowState, LOW, LOW);
+            lastBlinkTime = currentMillis;
+          }
+
+          // Sonido: 1 pitido cada 1.5 segundos
+          if (currentMillis - lastSoundTime >= 1500) {
+            tone(BUZZER_PIN, 1200, 100);
+            lastSoundTime = currentMillis;
+          }
+
+          // Mostrar mensaje de instrucción
+          if (!vibrationDuringNotify) {
+             printLCD("1. Agita frasco", "2. Presiona TOTEM");
+          } else {
+             printLCD("Pastilla Lista", "Presiona TOTEM");
+          }
+        } else {
+          // Fin de los 15 segundos activos, pasar a pausa de 10s
+          if (medPhase < 3) {
+            phaseWaiting = true;
+            phaseStartTime = currentMillis; 
+            updateTrafficLight(LOW, LOW, LOW); // Apagar semáforo durante pausa
+          } else {
+            // Terminó la fase 3 (15s), ya no suena más.
+            if (!phaseEventSent) {
+              dailyScore -= 30; // Castigo por ignorar completamente
+              sendJsonEvent("medication_system", "schedule_passed_urgent", "medication");
+              phaseEventSent = true;
+              isNotifying = false;
+              vibrationDuringNotify = false;
+              updateGlobalTrafficLight();
+              printLCD("Monitoreando", "Actividad Abuelo");
+            }
+          }
+        }
+      } else {
+        // Estamos en pausa de 10 segundos
+        if (currentMillis - phaseStartTime < 10000) {
+           if (!vibrationDuringNotify) {
+              printLCD("En pausa...", "Agita el frasco");
+           } else {
+              printLCD("Pastilla Lista", "Presiona TOTEM");
+           }
+        } else {
+          // Fin de la pausa, siguiente fase
+          medPhase++;
+          phaseWaiting = false;
+          phaseStartTime = currentMillis;
+          phaseEventSent = false;
+          
+          if (medPhase == 2) {
+            sendJsonEvent("medication_system", "second_attempt", "medication");
+          } 
+        }
       }
+      
+      // Validación: Requiere presionar Touch
+      bool currentTouchState = digitalRead(TOUCH_TOTEM_PIN);
+      if (currentTouchState == HIGH && lastTouchState == LOW) {
+        if (vibrationDuringNotify) {
+          isNotifying = false;
+          vibrationDuringNotify = false; 
+          
+          if (medPhase == 1) dailyScore -= 0;
+          else if (medPhase == 2) dailyScore -= 10;
+          else if (medPhase == 3) dailyScore -= 20;
+
+          updateGlobalTrafficLight();
+          printLCD("Entendido!", "Medicina Tomada");
+          
+          tone(BUZZER_PIN, 1500, 150);
+          delay(200);
+          tone(BUZZER_PIN, 2000, 200);
+          
+          String attemptMsg = "taken_attempt_" + String(medPhase);
+          sendJsonEvent("touch_totem", attemptMsg, "medication");
+          
+          delay(2000);
+          printLCD("Monitoreando", "Actividad Abuelo");
+        } else {
+          printLCD("Error:", "Agita frasco 1ro");
+          tone(BUZZER_PIN, 400, 500); // Sonido de error
+          delay(1000); // Pequeña pausa para que lea el mensaje
+        }
+      }
+      lastTouchState = currentTouchState;
+
     } else if (notifyType == "ACT") {
-      // 1 pitido largo al inicio
+      // Lógica original para Actividad
+      if (currentMillis - lastBlinkTime >= 500) {
+        ledYellowState = !ledYellowState;
+        updateTrafficLight(LOW, ledYellowState, LOW);
+        lastBlinkTime = currentMillis;
+        blinkCount++;
+        
+        if (blinkCount >= 20) {
+          isNotifying = false;
+          updateGlobalTrafficLight(); 
+          printLCD("Monitoreando", "Actividad Abuelo");
+        }
+      }
+      
       if (soundCount == 0) {
         tone(BUZZER_PIN, 800, 600);
         soundCount++;
       }
+      
+      // Cancelar notificación de actividad solo con Touch
+      bool currentTouchState = digitalRead(TOUCH_TOTEM_PIN);
+      if (lastTouchState == LOW && currentTouchState == HIGH) {
+        isNotifying = false;
+        updateGlobalTrafficLight();
+        printLCD("Entendido!", "Gracias Manuel");
+        
+        tone(BUZZER_PIN, 1500, 150);
+        delay(200);
+        tone(BUZZER_PIN, 2000, 200);
+        
+        sendJsonEvent("touch_totem", "reminder_acknowledged", "ritual");
+        
+        delay(2000);
+        printLCD("Monitoreando", "Actividad Abuelo");
+      }
+      lastTouchState = currentTouchState;
     }
-    
-    // 3. Cancelar notificación con el Touch
-    bool currentTouchState = digitalRead(TOUCH_TOTEM_PIN);
-    if (lastTouchState == LOW && currentTouchState == HIGH) {
-      // Acknowledged!
-      isNotifying = false;
-      updateTrafficLight(LOW, LOW, HIGH);
-      printLCD("Entendido!", "Gracias Manuel");
-      
-      // Sonido especial de confirmación
-      tone(BUZZER_PIN, 1500, 150);
-      delay(200);
-      tone(BUZZER_PIN, 2000, 200);
-      
-      // Enviar a la DB
-      sendJsonEvent("touch_totem", "reminder_acknowledged", "ritual");
-      
-      delay(2000);
-      printLCD("Monitoreando", "Actividad Abuelo");
-    }
-    lastTouchState = currentTouchState;
   }
 
   // Reset diario de variables (Para nueva rutina diaria)
@@ -340,7 +464,8 @@ void loop() {
     fridgeCheckFullfilled = false;
     totemCheckFullfilled = false;
     lastResetTime = currentMillis;
-    updateTrafficLight(LOW, LOW, HIGH);
+    dailyScore = 100; // Resetear puntaje
+    updateGlobalTrafficLight();
     printLCD("Nuevo Dia", "Rutina Reiniciada");
     delay(2000);
   }
@@ -350,29 +475,37 @@ void loop() {
   // =========================================================================
   
   if (medVibrated) {
-    Serial.println("📳 [DEBUG] Vibración detectada, procesando...");
-    delay(200); // Debounce físico del resorte o cristal
-    
-    if (isTaken) {
-      // Caso 6: Riesgo de Duplicación (Ya se tomó e intentó de nuevo)
-      updateTrafficLight(HIGH, LOW, LOW); // Semáforo Rojo
-      tone(BUZZER_PIN, 1000, 1000); // Zumbido de alerta fuerte de 1 segundo
-      printLCD("ALERTA!", "Peligro Duplic.");
-      sendJsonEvent("vib_sensor", "duplication_warning", "medication");
-      delay(3000); // Mantiene visualizando la advertencia
-      printLCD("Monitoreando", "Actividad Abuelo");
-      updateTrafficLight(LOW, LOW, HIGH); // Vuelve a verde
+    if (isNotifying && notifyType == "MED") {
+      vibrationDuringNotify = true;
+      medVibrated = false;
+    } else if (currentMillis - lastVibHandledMs < 2000) {
+      medVibrated = false;
     } else {
-      // Caso 1: Inicio de rutina de medicación OK
-      isTaken = true;
-      printLCD("Medicina OK", "Buen trabajo");
-      updateTrafficLight(LOW, LOW, HIGH); // Mantiene o fuerza Verde
-      tone(BUZZER_PIN, 600, 200); // Beep de confirmación positiva
-      sendJsonEvent("vib_sensor", "confirmed_taken", "medication");
-      delay(2000);
-      printLCD("Monitoreando", "Actividad Abuelo");
+      lastVibHandledMs = currentMillis;
+      Serial.println("📳 [DEBUG] Vibración detectada, procesando...");
+      delay(120);
+      
+      if (isTaken) {
+        // Caso 6: Riesgo de Duplicación (Ya se tomó e intentó de nuevo)
+        updateTrafficLight(HIGH, LOW, LOW); // Semáforo Rojo (Alerta temporal)
+        tone(BUZZER_PIN, 1000, 1000); // Zumbido de alerta fuerte de 1 segundo
+        printLCD("ALERTA!", "Peligro Duplic.");
+        sendJsonEvent("vib_sensor", "duplication_warning", "medication");
+        delay(3000); // Mantiene visualizando la advertencia
+        printLCD("Monitoreando", "Actividad Abuelo");
+        updateGlobalTrafficLight(); // Vuelve a su color general
+      } else {
+        // Caso 1: Inicio de rutina de medicación OK (espontánea)
+        isTaken = true;
+        printLCD("Medicina OK", "Buen trabajo");
+        tone(BUZZER_PIN, 600, 200); // Beep de confirmación positiva
+        sendJsonEvent("vib_sensor", "confirmed_taken", "medication");
+        delay(2000);
+        printLCD("Monitoreando", "Actividad Abuelo");
+        updateGlobalTrafficLight(); 
+      }
+      medVibrated = false;
     }
-    medVibrated = false;
   }
 
   // =========================================================================
@@ -384,18 +517,26 @@ void loop() {
     if (!isSitting) {
       isSitting = true;
       sedentaryStartTime = currentMillis;
+      sendJsonEvent("sofa_ultrasonic", "sesion_inicio", "activity", "\"lugar\":\"sofa\",\"fase\":\"sentado\"");
     } else if (!sedentaryAlertSent && (currentMillis - sedentaryStartTime >= ONE_HOUR_MS)) {
       // Alerta Sedentarismo 
       updateTrafficLight(LOW, HIGH, LOW); // Semáforo Amarillo
       tone(BUZZER_PIN, 440, 2000); // Zumbido tenue y prolongado para avisar
       printLCD("Sedentarismo!", "Ponte de pie");
-      sendJsonEvent("sofa_ultrasonic", "sedentary_alert", "activity");
+      sendJsonEvent("sofa_ultrasonic", "sedentary_alert", "activity", "\"lugar\":\"sofa\",\"fase\":\"alerta_sedentarismo\"");
       sedentaryAlertSent = true;
     }
   } else if (distSofa >= DIST_SOFA_THRESHOLD) {
     if (isSitting) {
-      sendJsonEvent("sofa_ultrasonic", "activity_resumed", "activity");
-      updateTrafficLight(LOW, LOW, HIGH); // Vuelve a verde
+      unsigned long duracion = (currentMillis - sedentaryStartTime) / 1000;
+      if (duracion >= 3) {
+        sendJsonEvent(
+          "sofa_ultrasonic",
+          "sesion_fin",
+          "activity",
+          "\"lugar\":\"sofa\",\"fase\":\"levantado\",\"duracion_seg\":" + String(duracion));
+      }
+      updateGlobalTrafficLight(); // Vuelve al estado global
       printLCD("Monitoreando", "Actividad Abuelo");
     }
     isSitting = false;
@@ -411,7 +552,7 @@ void loop() {
       lockLow = false;
       pirActive = true;
       movementCheckFullfilled = true; // Acumular para Caso 7
-      sendJsonEvent("pir_sensor", "motion_detected", "activity");
+      sendJsonEvent("pir_sensor", "motion_detected", "activity", "\"lugar\":\"sala\",\"fase\":\"movimiento\"");
     }
     takeLowTime = true;
   }
@@ -446,7 +587,8 @@ void loop() {
         printLCD("Nevera Cerrada", "Duree: " + String(duracion) + "s");
         isFridgeOpen = false;
         fridgeCheckFullfilled = true; // Acumular para Caso 7
-        sendJsonEvent("fridge_laser", "closed_duration_" + String(duracion) + "s", "activity");
+        sendJsonEvent("fridge_laser", "closed_duration_" + String(duracion) + "s", "activity",
+                      "\"lugar\":\"cocina\",\"fase\":\"nevera_cerrada\"");
         delay(1500);
         printLCD("Monitoreando", "Actividad Abuelo");
       }
@@ -463,12 +605,18 @@ void loop() {
       // Abuelo puso su dedo en el Touch. 
       // Aquí podrías opcionalmente leer `analogRead(HEART_RATE_PIN)` para enviar su pulso cardíaco
       
-      updateTrafficLight(LOW, LOW, HIGH);
+      updateGlobalTrafficLight();
       tone(BUZZER_PIN, 800, 300); // Beep feliz de check-in
       printLCD("Todo Bien", "Buen dia Abuelo!");
       
       totemCheckFullfilled = true; // Acumular para Caso 7
-      sendJsonEvent("touch_totem", "well_being_confirmed", "ritual");
+      {
+        String ritualEstado = "well_being_confirmed";
+        if (beatAvg > 35 && beatAvg < 200) {
+          ritualEstado = String("well_being_BPM_") + String(beatAvg);
+        }
+        sendJsonEvent("touch_totem", ritualEstado, "ritual", "\"metrica\":\"ritual_bienestar\",\"lugar\":\"totem\"");
+      }
       
       Serial.print("❤️ [RITUAL] Ritmo Cardíaco: "); Serial.print(beatAvg); Serial.println(" BPM");
       
@@ -487,15 +635,43 @@ void loop() {
     routineNotifiedToday = true;
   }
 
-  delay(100); 
+  // Telemetría de pulso para gráficas (sin depender solo del toque en tótem)
+  if (beatAvg > 40 && beatAvg < 200 && (currentMillis - lastBpmTelemetryMs > 22000)) {
+    sendJsonEvent("max30105", String("BPM_") + String(beatAvg), "ritual", "\"metrica\":\"pulso_bpm\",\"lugar\":\"totem\"");
+    lastBpmTelemetryMs = currentMillis;
+  }
+
+  delay(25);
 }
 
 // -------------------------------------------------------------------------
 // FUNCIONES AUXILIARES
 // -------------------------------------------------------------------------
 
-void handleVibInterrupt() {
-  medVibrated = true; 
+/**
+ * SW-420 típico: reposo LOW, vibración HIGH.
+ * Menos sensible: HIGH estable varias lecturas + tiempo mínimo largo entre detecciones.
+ */
+void pollVibrationSensitive() {
+  int v = digitalRead(VIB_MED_PIN);
+  unsigned long t = millis();
+  static uint8_t highStreak = 0;
+
+  if (v == HIGH) {
+    if (highStreak < 30) highStreak++;
+  } else {
+    highStreak = 0;
+    lastVibPinLevel = 0;
+    return;
+  }
+
+  // ~8 lecturas seguidas en HIGH (con delay(25) del loop ≈ 200 ms de pulso sostenido)
+  if (highStreak >= 8 && lastVibPinLevel == 0 && (t - lastVibEdgeMs >= 650)) {
+    medVibrated = true;
+    lastVibEdgeMs = t;
+    lastVibPinLevel = 1;
+    highStreak = 0;
+  }
 }
 
 float getDistance(int trigPin, int echoPin) {
@@ -525,8 +701,8 @@ void printLCD(String line1, String line2) {
   lcd.print(line2);
 }
 
-// Genera JSON puro
-void sendJsonEvent(String sensorId, String value, String module) {
+// Genera JSON puro (dataExtras: pares JSON ya escapados, p.ej. "\"lugar\":\"sofa\",\"fase\":\"sentado\"")
+void sendJsonEvent(String sensorId, String value, String module, String dataExtras) {
   String jsonPayload = "{";
   jsonPayload += "\"token\": \"CASA10\", "; // Inyectamos el Token de Manuel que conversamos
   jsonPayload += "\"modulo\": \"" + module + "\", ";
@@ -534,6 +710,10 @@ void sendJsonEvent(String sensorId, String value, String module) {
   jsonPayload += "\"data\": {";
   jsonPayload += "\"sensor_id\": \"" + sensorId + "\", ";
   jsonPayload += "\"estado\": \"" + value + "\"";
+  if (dataExtras.length() > 0) {
+    jsonPayload += ", ";
+    jsonPayload += dataExtras;
+  }
   jsonPayload += "}}";
   
   Serial.println(jsonPayload); // Para monitorearlo en el PC por cable USB

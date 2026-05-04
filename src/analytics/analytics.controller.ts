@@ -19,4 +19,9 @@ export class AnalyticsController {
   getTimeline(@Param('elderId') elderId: string) {
     return this.analyticsService.getTimeline(elderId);
   }
+
+  @Get('routine/:elderId')
+  getDailyRoutine(@Param('elderId') elderId: string) {
+    return this.analyticsService.getDailyRoutine(elderId);
+  }
 }

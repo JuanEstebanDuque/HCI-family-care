@@ -12,5 +12,6 @@ import { MedicationsModule } from '../medications/medications.module';
   ],
   controllers: [RemindersController],
   providers: [RemindersService],
+  exports: [RemindersService, MongooseModule],
 })
 export class RemindersModule { }
