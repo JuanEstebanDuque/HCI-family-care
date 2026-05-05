@@ -305,7 +305,7 @@ void loop() {
         phaseWaiting = false;
         phaseEventSent = false;
         updateTrafficLight(LOW, LOW, HIGH); // Verde inicialmente para Fase 1
-        printLCD("1. Agita frasco", "2. Toca TOTEM");
+        printLCD("Recordatorio MED", "Toca TOTEM");
         sendJsonEvent("medication_system", "in_range", "medication");
       } else {
         notifyType = "ACT";
@@ -340,11 +340,7 @@ void loop() {
           }
 
           // Mostrar mensaje de instrucción
-          if (!vibrationDuringNotify) {
-             printLCD("1. Agita frasco", "2. Presiona TOTEM");
-          } else {
-             printLCD("Pastilla Lista", "Presiona TOTEM");
-          }
+          printLCD("Recordatorio MED", "Presiona TOTEM");
         } else {
           // Fin de los 15 segundos activos, pasar a pausa de 10s
           if (medPhase < 3) {
@@ -367,11 +363,7 @@ void loop() {
       } else {
         // Estamos en pausa de 10 segundos
         if (currentMillis - phaseStartTime < 10000) {
-           if (!vibrationDuringNotify) {
-              printLCD("En pausa...", "Agita el frasco");
-           } else {
-              printLCD("Pastilla Lista", "Presiona TOTEM");
-           }
+          printLCD("En pausa...", "Presiona TOTEM");
         } else {
           // Fin de la pausa, siguiente fase
           medPhase++;
@@ -388,31 +380,25 @@ void loop() {
       // Validación: Requiere presionar Touch
       bool currentTouchState = digitalRead(TOUCH_TOTEM_PIN);
       if (currentTouchState == HIGH && lastTouchState == LOW) {
-        if (vibrationDuringNotify) {
-          isNotifying = false;
-          vibrationDuringNotify = false; 
-          
-          if (medPhase == 1) dailyScore -= 0;
-          else if (medPhase == 2) dailyScore -= 10;
-          else if (medPhase == 3) dailyScore -= 20;
+        isNotifying = false;
+        vibrationDuringNotify = false;
+        
+        if (medPhase == 1) dailyScore -= 0;
+        else if (medPhase == 2) dailyScore -= 10;
+        else if (medPhase == 3) dailyScore -= 20;
 
-          updateGlobalTrafficLight();
-          printLCD("Entendido!", "Medicina Tomada");
-          
-          tone(BUZZER_PIN, 1500, 150);
-          delay(200);
-          tone(BUZZER_PIN, 2000, 200);
-          
-          String attemptMsg = "taken_attempt_" + String(medPhase);
-          sendJsonEvent("touch_totem", attemptMsg, "medication");
-          
-          delay(2000);
-          printLCD("Monitoreando", "Actividad Abuelo");
-        } else {
-          printLCD("Error:", "Agita frasco 1ro");
-          tone(BUZZER_PIN, 400, 500); // Sonido de error
-          delay(1000); // Pequeña pausa para que lea el mensaje
-        }
+        updateGlobalTrafficLight();
+        printLCD("Entendido!", "Medicina Tomada");
+        
+        tone(BUZZER_PIN, 1500, 150);
+        delay(200);
+        tone(BUZZER_PIN, 2000, 200);
+        
+        String attemptMsg = "taken_attempt_" + String(medPhase);
+        sendJsonEvent("touch_totem", attemptMsg, "medication");
+        
+        delay(2000);
+        printLCD("Monitoreando", "Actividad Abuelo");
       }
       lastTouchState = currentTouchState;
 
@@ -485,25 +471,14 @@ void loop() {
       Serial.println("📳 [DEBUG] Vibración detectada, procesando...");
       delay(120);
       
-      if (isTaken) {
-        // Caso 6: Riesgo de Duplicación (Ya se tomó e intentó de nuevo)
-        updateTrafficLight(HIGH, LOW, LOW); // Semáforo Rojo (Alerta temporal)
-        tone(BUZZER_PIN, 1000, 1000); // Zumbido de alerta fuerte de 1 segundo
-        printLCD("ALERTA!", "Peligro Duplic.");
-        sendJsonEvent("vib_sensor", "duplication_warning", "medication");
-        delay(3000); // Mantiene visualizando la advertencia
-        printLCD("Monitoreando", "Actividad Abuelo");
-        updateGlobalTrafficLight(); // Vuelve a su color general
-      } else {
-        // Caso 1: Inicio de rutina de medicación OK (espontánea)
-        isTaken = true;
-        printLCD("Medicina OK", "Buen trabajo");
-        tone(BUZZER_PIN, 600, 200); // Beep de confirmación positiva
-        sendJsonEvent("vib_sensor", "confirmed_taken", "medication");
-        delay(2000);
-        printLCD("Monitoreando", "Actividad Abuelo");
-        updateGlobalTrafficLight(); 
-      }
+      // Sin alerta por duplicación: cualquier vibración se toma como confirmación simple.
+      isTaken = true;
+      printLCD("Medicina OK", "Buen trabajo");
+      tone(BUZZER_PIN, 600, 200); // Beep de confirmación positiva
+      sendJsonEvent("vib_sensor", "confirmed_taken", "medication");
+      delay(2000);
+      printLCD("Monitoreando", "Actividad Abuelo");
+      updateGlobalTrafficLight();
       medVibrated = false;
     }
   }
@@ -665,8 +640,8 @@ void pollVibrationSensitive() {
     return;
   }
 
-  // ~8 lecturas seguidas en HIGH (con delay(25) del loop ≈ 200 ms de pulso sostenido)
-  if (highStreak >= 8 && lastVibPinLevel == 0 && (t - lastVibEdgeMs >= 650)) {
+  // Menos sensible: exige ~14 lecturas HIGH seguidas (~350 ms) y mayor pausa entre detecciones.
+  if (highStreak >= 14 && lastVibPinLevel == 0 && (t - lastVibEdgeMs >= 1200)) {
     medVibrated = true;
     lastVibEdgeMs = t;
     lastVibPinLevel = 1;
